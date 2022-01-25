@@ -1,3 +1,3 @@
 20190604
 
-Replacement linker for SDCC that helps with building Megacart images for the ColecoVision.
+Replacement objcopy for SDCC that helps with building Megacart images for the ColecoVision.
