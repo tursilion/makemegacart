@@ -2,9 +2,7 @@
 // see readme.txt
 // for SDCC 3.5.0, 9/2/2015
 
-#ifdef _WINDOWS
 #include "stdafx.h"
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +20,7 @@ struct {
 	int bank;						// bank it's in (from the last _bankXX label)
 } segmentMap[4096];					// there can be many more segments than banks, see if this works.
 int nLastSegment = 0;				// loaded from a map or crt0, if presented
+bool isBios = false;
 
 // -1 means not found, else 0-255
 int mapsearch(const char *s) {
@@ -107,12 +106,25 @@ int main(int argc, char* argv[])
 
 	if (argc<3) {
 		printf("Specify input (ihx) and output (rom) files, optionally add ROM size in KB!\n");
+        printf("Use -bios for the BIOS target instead of ROM\n");
 		printf("prefix with -map <filename> to parse a segment map for layout.\n");
 		return 10;
 	}
 
 	arg=1;
-	if (0 == strcmp(argv[arg], "-map")) {
+
+    if (0 == strcmp(argv[arg], "-bios")) {
+        isBios = true;
+		printf("Going to target BIOS memory range.\n");
+
+		++arg;
+		if (argc-arg < 2) {
+			printf("BIOS set but insufficient arguments for input and output.\n");
+			return 10;
+		}
+	}
+
+    if (0 == strcmp(argv[arg], "-map")) {
 		if (!readmap(argv[++arg])) {
 			printf("Failed reading map.\n");
 			return 10;
@@ -121,7 +133,7 @@ int main(int argc, char* argv[])
 		printf("Succeeded reading map, found %d segments\n", nLastSegment);
 
 		++arg;
-		if (argc<5) {
+		if (argc-arg < 2) {
 			printf("Map read but insufficient arguments for input and output.\n");
 			return 10;
 		}
@@ -135,13 +147,20 @@ int main(int argc, char* argv[])
 	memset(buf, 0xff, sizeof(buf));		// fill with 0xFF for the EPROMs
 	memset(szName, 0, sizeof(szName));
 	nHighestUsed[0]=0x8000;
+    if (isBios) nHighestUsed[0]=0x0000;
+
 	for (int i=1; i<256; i++) {
 		nHighestUsed[i]=0xc000;
+        if (isBios) nHighestUsed[i]=0x0000;
 	}
 
+    bool inBad = false;
+    int firstbad = 0, lastbad = 0;
+    char currentArea[128]="";
+    int adr = 0;
 	while (!feof(fp)) {
 		char tmp[10];
-		int cnt,adr,type,dat;
+		int cnt,type,dat;
 		int p,q;
 
 		if (NULL == fgets(szLine, 128, fp)) break;
@@ -156,6 +175,8 @@ int main(int argc, char* argv[])
 
 		// check for area header
 		if (0 == strncmp(szLine, "#AREA:", 6)) {
+            strncpy(currentArea, &szLine[6], 127);
+            currentArea[127]=0;
 			nCurrentBank=1;		// assume by default
 			if (nLastSegment > 0) {
 				p=6;										// start after the tag
@@ -233,11 +254,27 @@ int main(int argc, char* argv[])
 				continue;
 			}
 			// check where it is
-			if ((adr >= 0x8000) & (adr < 0xC000)) {
+            if ((isBios)&&(adr >= 0x0000) && (adr < 0x6000)) {
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                }
+				// bios block (always banked in) (Phoenix BIOS has 16k)
+				buf[0][adr] = dat;
+				if (adr > nHighestUsed[0]) nHighestUsed[0]=adr;
+            } else if ((adr >= 0x8000) && (adr < 0xC000) && (!isBios)) {
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                }
 				// boot block (always banked in)
 				buf[0][adr-0x8000] = dat;
 				if (adr > nHighestUsed[0]) nHighestUsed[0]=adr;
-			} else if (adr >= 0xc000) {
+			} else if ((adr >= 0xc000)&&(!isBios)) {
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                }
 				// bank switched area
 				buf[nCurrentBank][adr-0xc000] = dat;
 				if (adr >= 0xFF00) {
@@ -251,11 +288,21 @@ int main(int argc, char* argv[])
 				}
 			} else {
 				// addresses below 0x8000 are not used in Coleco ROMs
-				printf("Bad bank address %04X\n", adr);
+                if (!inBad) {
+                    inBad = true;
+                    firstbad = adr;
+                    lastbad = adr;
+                } else {
+                    lastbad = adr;
+                }
 			}
 			adr++;
 		}
 	}
+    if (inBad) {
+        inBad = false;
+        printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+    }
 
 	fclose(fp);
 
@@ -316,6 +363,29 @@ int main(int argc, char* argv[])
 		printf("%dkb ROM Requested\n", nSize);
 	}
 
+    if (isBios) {
+		printf("Not a megacart - writing Phoenix 24k BIOS.\n");
+
+		fp=fopen(argv[arg], "wb");
+		if (NULL == fp) {
+			printf("Failed to open output file!\n");
+			return 10;
+		}
+
+		// we'll make a 24k binary
+		fwrite(buf[0], 1, 3*8192, fp);	// boot block
+		fclose(fp);
+
+		printf("\n#  SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
+		printf("=  ======  =======  ======  =====  ===============\n");
+
+		int fre;
+		fre=0x5fff-nHighestUsed[0];     // only 24k in the Phoenix BIOS
+    	printf("X  n/a     0x00000  0x0000  %5d  BIOS\n", fre);
+
+        return 0;
+	}
+
 	if (nNumBanks < 2) {
 		printf("This is not a megacart - writing normal Coleco cart ROM\n");
 
@@ -337,8 +407,7 @@ int main(int argc, char* argv[])
 		int fre;
 		fre=0xbfff-nHighestUsed[0];
 		fre+=0xffff-nHighestUsed[1];	// no bank switch, so we can use all of it
-
-		printf("X  n/a     0x00000  0x8000  %5d  BOOT\n", fre);
+    	printf("X  n/a     0x00000  0x8000  %5d  BOOT\n", fre);
 
 		return 0;
 	}
@@ -414,9 +483,8 @@ int main(int argc, char* argv[])
 			fre=0xbfff-nHighestUsed[0];
 		} else {
 			// ffbf because ffc0 and up are reserved for the bank switch logic
-			// It's ffc0 on a real megacart (1MB), but ff00 on my proposed machine (4MB)
-			//fre=0xffbf-nHighestUsed[i];
-			fre=0xff00-nHighestUsed[i];
+			// It's ffc0 on a real megacart (1MB)
+			fre=0xffbf-nHighestUsed[i];
 		}
 
 		for (int k=16383-fre; k>=0; k--) {
