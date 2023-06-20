@@ -277,9 +277,8 @@ int main(int argc, char* argv[])
                 }
 				// bank switched area
 				buf[nCurrentBank][adr-0xc000] = dat;
-				if (adr >= 0xFF00) {
+				if (adr >= 0xFFC0) {
 					// we just remember for now, it's only an error if we ARE using a megacart
-					// It's 0xFFC0 on a real megacart
 					nBankSwitchAreaUsed=nCurrentBank;
 				}
 				if (adr > nHighestUsed[nCurrentBank]) 
@@ -413,11 +412,12 @@ int main(int argc, char* argv[])
 	}
 
 	if (nBankSwitchAreaUsed > 0) {
-		printf("Bad MegaCart - bank %d has code/data above $FF00, which is for bank switching.\n", nBankSwitchAreaUsed);
-		printf("Note: up to $FFC0 valid on a real megacart\n");
+		printf("Bad MegaCart - bank %d has code/data above $FFC0, which is for bank switching.\n", nBankSwitchAreaUsed);
 		printf("Highest bank addresses used:\n");
-		for (int i=0; i<=nNumBanks; i++) {
-			printf(" %2d - $%04X\n", i, nHighestUsed[i]);
+		for (int i=nNumBanks; i>=0; i--) {
+			int fre=0xffbf-nHighestUsed[i];
+			if (i == 0) fre = 0xbfff-nHighestUsed[i];
+			printf(" %2d - $%04X (%d bytes free)\n", i, nHighestUsed[i], fre);
 		}
 		return -1;
 	}
@@ -483,7 +483,6 @@ int main(int argc, char* argv[])
 			fre=0xbfff-nHighestUsed[0];
 		} else {
 			// ffbf because ffc0 and up are reserved for the bank switch logic
-			// It's ffc0 on a real megacart (1MB)
 			fre=0xffbf-nHighestUsed[i];
 		}
 
