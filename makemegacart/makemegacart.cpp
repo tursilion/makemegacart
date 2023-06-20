@@ -158,6 +158,7 @@ int main(int argc, char* argv[])
     int firstbad = 0, lastbad = 0;
     char currentArea[128]="";
     int adr = 0;
+	int extendedAdr = 0;	// we don't WANT extended addresses, but it makes the mapping easier to follow
 	while (!feof(fp)) {
 		char tmp[10];
 		int cnt,type,dat;
@@ -214,7 +215,7 @@ int main(int argc, char* argv[])
 		tmp[1]=szLine[2];
 		tmp[2]='\0';
 		if (1 != sscanf(tmp, "%x", &cnt)) {
-			printf("parse error: %s", szLine);
+			printf("parse error: %s\n", szLine);
 			continue;
 		}
 		tmp[0]=szLine[3];
@@ -223,14 +224,14 @@ int main(int argc, char* argv[])
 		tmp[3]=szLine[6];
 		tmp[4]='\0';
 		if (1 != sscanf(tmp, "%x", &adr)) {
-			printf("parse error: %s", szLine);
+			printf("parse error: %s\n", szLine);
 			continue;
 		}
 		tmp[0]=szLine[7];
 		tmp[1]=szLine[8];
 		tmp[2]='\0';
 		if (1 != sscanf(tmp, "%x", &type)) {
-			printf("parse error: %s", szLine);
+			printf("parse error: %s\n", szLine);
 			continue;
 		}
 
@@ -239,60 +240,78 @@ int main(int argc, char* argv[])
 			break;
 		}
 
+		if (type == 4) {
+			// extended address in the two big endian data bytes
+			tmp[0]=szLine[9];
+			tmp[1]=szLine[10];
+			tmp[2]=szLine[11];
+			tmp[3]=szLine[12];
+			tmp[4] = '\0';
+			if (1 != sscanf(tmp, "%x", &extendedAdr)) {
+				printf("parse error: %s\n", szLine);
+				continue;
+			}
+			if (extendedAdr != 0) {
+				printf("Warning: non-zero extended address 0x%x\n", extendedAdr);
+			}
+			continue;
+		}
+
 		if (type != 0) {
-			printf("Unsupported record: %s", szLine);
+			printf("Unsupported record: %s (type %d, want 0)\n", szLine, type);
 			continue;
 		}
 
 		p=9;
 		while (cnt--) {
+			int xadr = (extendedAdr<<16)|adr;
 			tmp[0]=szLine[p++];
 			tmp[1]=szLine[p++];
 			tmp[2]='\0';
 			if (1 != sscanf(tmp, "%x", &dat)) {
-				printf("parse error: %s", szLine);
+				printf("parse error: %s\n", szLine);
 				continue;
 			}
 			// check where it is
-            if ((isBios)&&(adr >= 0x0000) && (adr < 0x6000)) {
+            if ((isBios)&&(xadr >= 0x0000) && (xadr < 0x6000)) {
                 if (inBad) {
                     inBad = false;
-                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                    printf("Bad data from %04X - %04X for %s (want 0000-5FFF)\n", firstbad, lastbad, currentArea);
                 }
 				// bios block (always banked in) (Phoenix BIOS has 16k)
-				buf[0][adr] = dat;
-				if (adr > nHighestUsed[0]) nHighestUsed[0]=adr;
-            } else if ((adr >= 0x8000) && (adr < 0xC000) && (!isBios)) {
+				buf[0][xadr] = dat;
+				if (xadr > nHighestUsed[0]) nHighestUsed[0]=xadr;
+            } else if ((xadr >= 0x8000) && (xadr < 0xC000) && (!isBios)) {
                 if (inBad) {
                     inBad = false;
-                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                    printf("Bad data from %04X - %04X for %s (want 8000-BFFF)\n", firstbad, lastbad, currentArea);
                 }
 				// boot block (always banked in)
-				buf[0][adr-0x8000] = dat;
-				if (adr > nHighestUsed[0]) nHighestUsed[0]=adr;
-			} else if ((adr >= 0xc000)&&(!isBios)) {
+				buf[0][xadr-0x8000] = dat;
+				if (xadr > nHighestUsed[0]) nHighestUsed[0]=xadr;
+			} else if ((xadr >= 0xc000)&&(!isBios)) {
                 if (inBad) {
                     inBad = false;
-                    printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+                    printf("Bad data from %04X - %04X for %s (want C000-FFFF)\n", firstbad, lastbad, currentArea);
                 }
 				// bank switched area
-				buf[nCurrentBank][adr-0xc000] = dat;
-				if (adr >= 0xFFC0) {
+				buf[nCurrentBank][xadr-0xc000] = dat;
+				if (xadr >= 0xFFC0) {
 					// we just remember for now, it's only an error if we ARE using a megacart
 					nBankSwitchAreaUsed=nCurrentBank;
 				}
-				if (adr > nHighestUsed[nCurrentBank]) 
+				if (xadr > nHighestUsed[nCurrentBank]) 
 				{
-					nHighestUsed[nCurrentBank]=adr;
+					nHighestUsed[nCurrentBank]=xadr;
 				}
 			} else {
 				// addresses below 0x8000 are not used in Coleco ROMs
                 if (!inBad) {
                     inBad = true;
-                    firstbad = adr;
-                    lastbad = adr;
+                    firstbad = xadr;
+                    lastbad = xadr;
                 } else {
-                    lastbad = adr;
+                    lastbad = xadr;
                 }
 			}
 			adr++;
@@ -300,7 +319,7 @@ int main(int argc, char* argv[])
 	}
     if (inBad) {
         inBad = false;
-        printf("Bad data from %04X - %04X for %s\n", firstbad, lastbad, currentArea);
+        printf("Bad data from %04X - %04X for %s (address < 8000?)\n", firstbad, lastbad, currentArea);
     }
 
 	fclose(fp);
@@ -413,11 +432,26 @@ int main(int argc, char* argv[])
 
 	if (nBankSwitchAreaUsed > 0) {
 		printf("Bad MegaCart - bank %d has code/data above $FFC0, which is for bank switching.\n", nBankSwitchAreaUsed);
-		printf("Highest bank addresses used:\n");
+		int cnt=0;
+		printf("\n#  SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
+		printf("=  ======  =======  ======  =====  ===============\n");
 		for (int i=nNumBanks; i>=0; i--) {
-			int fre=0xffbf-nHighestUsed[i];
-			if (i == 0) fre = 0xbfff-nHighestUsed[i];
-			printf(" %2d - $%04X (%d bytes free)\n", i, nHighestUsed[i], fre);
+			int fre;
+			if (i == 0) {
+				fre=0xbfff-nHighestUsed[0];
+			} else {
+				// ffbf because ffc0 and up are reserved for the bank switch logic
+				fre=0xffbf-nHighestUsed[i];
+			}
+
+			for (int k=16383-fre; k>=0; k--) {
+				if (k>16383-9) continue;
+				if (0 == memcmp(&buf[i][k], "LinkTag:",8)) {
+					strcpy(szName[i], (const char*)(&buf[i][k])+8);
+				}
+			}
+			printf("%X  0xFFF%X  0x%05X  %s  %5d  %s\n", i, 0xf-i, cnt*16384, i==0?"0x8000":"0xC000", fre, szName[i]);
+			cnt++;
 		}
 		return -1;
 	}
