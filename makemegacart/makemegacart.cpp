@@ -21,6 +21,8 @@ struct {
 } segmentMap[4096];					// there can be many more segments than banks, see if this works.
 int nLastSegment = 0;				// loaded from a map or crt0, if presented
 bool isBios = false;
+bool isSMS = false;
+bool smsBank1Fixed = false;
 
 // -1 means not found, else 0-255
 int mapsearch(const char *s) {
@@ -123,6 +125,16 @@ int main(int argc, char* argv[])
 			return 10;
 		}
 	}
+    if (0 == strcmp(argv[arg], "-sms")) {
+        isSMS = true;
+		printf("Going to target SMS memory ranges.\n");
+
+		++arg;
+		if (argc-arg < 2) {
+			printf("SMS set but insufficient arguments for input and output.\n");
+			return 10;
+		}
+	}
 
     if (0 == strcmp(argv[arg], "-map")) {
 		if (!readmap(argv[++arg])) {
@@ -147,11 +159,12 @@ int main(int argc, char* argv[])
 	memset(buf, 0xff, sizeof(buf));		// fill with 0xFF for the EPROMs
 	memset(szName, 0, sizeof(szName));
 	nHighestUsed[0]=0x8000;
-    if (isBios) nHighestUsed[0]=0x0000;
+    if ((isBios)||(isSMS)) nHighestUsed[0]=0x0000;
 
 	for (int i=1; i<256; i++) {
 		nHighestUsed[i]=0xc000;
         if (isBios) nHighestUsed[i]=0x0000;
+		if (isSMS) nHighestUsed[i]=0x8000;
 	}
 
     bool inBad = false;
@@ -278,10 +291,45 @@ int main(int argc, char* argv[])
                     inBad = false;
                     printf("Bad data from %04X - %04X for %s (want 0000-5FFF)\n", firstbad, lastbad, currentArea);
                 }
-				// bios block (always banked in) (Phoenix BIOS has 16k)
+				// bios block (always banked in) (Phoenix BIOS has 24k)
 				buf[0][xadr] = dat;
 				if (xadr > nHighestUsed[0]) nHighestUsed[0]=xadr;
-            } else if ((xadr >= 0x8000) && (xadr < 0xC000) && (!isBios)) {
+			} else if ((isSMS) && (xadr >= 0x0000) && (xadr < 0x4000)) {
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s (want 0000-3fff)\n", firstbad, lastbad, currentArea);
+                }
+				// fixed bank 0 (always banked in generally)
+				buf[0][xadr] = dat;
+				if (xadr > nHighestUsed[0]) nHighestUsed[0]=xadr;
+			} else if ((isSMS) && (xadr >= 0x4000) && (xadr < 0x8000)) {
+				// for simple programs, we can chain bank1 right into bank 0 for up to 32k
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s (want 4000-7fff)\n", firstbad, lastbad, currentArea);
+                }
+				// fixed bank 1 (if you're doing that)
+				buf[1][xadr-0x4000] = dat;
+				if (!smsBank1Fixed) {
+					nHighestUsed[1]=0x4000;	// new base
+					smsBank1Fixed = true;
+				}
+				if (xadr > nHighestUsed[1]) nHighestUsed[1]=xadr;
+			} else if ((isSMS) && (xadr >= 0x8000) && (xadr < 0xc000)) {
+                if (inBad) {
+                    inBad = false;
+                    printf("Bad data from %04X - %04X for %s (want 8000-BFFF)\n", firstbad, lastbad, currentArea);
+                }
+				// bank switched area
+				buf[nCurrentBank][xadr-0x8000] = dat;
+				if (xadr > nHighestUsed[nCurrentBank]) 
+				{
+					nHighestUsed[nCurrentBank]=xadr;
+				}
+				if ((nCurrentBank == 1)&&(smsBank1Fixed)) {
+					printf("Warning: SMS page 1 is both banked and fixed!\n");
+				}
+            } else if ((xadr >= 0x8000) && (xadr < 0xC000) && (!isBios) && (!isSMS)) {
                 if (inBad) {
                     inBad = false;
                     printf("Bad data from %04X - %04X for %s (want 8000-BFFF)\n", firstbad, lastbad, currentArea);
@@ -289,7 +337,7 @@ int main(int argc, char* argv[])
 				// boot block (always banked in)
 				buf[0][xadr-0x8000] = dat;
 				if (xadr > nHighestUsed[0]) nHighestUsed[0]=xadr;
-			} else if ((xadr >= 0xc000)&&(!isBios)) {
+			} else if ((xadr >= 0xc000) && (!isBios) && (!isSMS)) {
                 if (inBad) {
                     inBad = false;
                     printf("Bad data from %04X - %04X for %s (want C000-FFFF)\n", firstbad, lastbad, currentArea);
@@ -319,7 +367,7 @@ int main(int argc, char* argv[])
 	}
     if (inBad) {
         inBad = false;
-        printf("Bad data from %04X - %04X for %s (address < 8000?)\n", firstbad, lastbad, currentArea);
+        printf("Bad data from %04X - %04X for %s (code/fixed data in RAM?)\n", firstbad, lastbad, currentArea);
     }
 
 	fclose(fp);
@@ -336,7 +384,7 @@ int main(int argc, char* argv[])
 		switch (nSize) {
 			case 64:
 				nNumBanks=3;
-				printf("** WARNING: 64k ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
+				if (!isSMS) printf("** WARNING: 64k ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
 				bOverrideSize=true;
 				break;
 
@@ -363,13 +411,13 @@ int main(int argc, char* argv[])
 			case 2048:
 				nNumBanks=127;
 				bOverrideSize=true;
-				printf("** WARNING: 2MB ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
+				if (!isSMS) printf("** WARNING: 2MB ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
 				break;
 
 			case 4096:
 				nNumBanks=255;
 				bOverrideSize=true;
-				printf("** WARNING: 4MB ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
+				if (!isSMS) printf("** WARNING: 4MB ROM is not valid for Megacart. Valid values are 128/256/512/1024.\n");
 				break;
 
 			default:
@@ -404,7 +452,7 @@ int main(int argc, char* argv[])
         return 0;
 	}
 
-	if (nNumBanks < 2) {
+	if ((nNumBanks < 2)&&(!isSMS)) {
 		printf("This is not a megacart - writing normal Coleco cart ROM\n");
 
 		fp=fopen(argv[arg], "wb");
@@ -477,10 +525,20 @@ int main(int argc, char* argv[])
 		} else if (nNumBanks > 7) {
 			nNumBanks = 15;
 			k=256;
-		} else {
-			// this is the minimum size
+		} else if (!isSMS) {
+			// this is the minimum size if not SMS
 			nNumBanks = 7;
 			k=128;
+		} else if (nNumBanks > 3) {
+			nNumBanks = 7;
+			k=128;
+		} else if (nNumBanks > 1) {
+			nNumBanks = 3;
+			k=64;
+		} else {
+			// this is the minimum if is SMS
+			nNumBanks = 1;
+			k=32;
 		}
 
 		printf("Writing %dk megacart\n", k);
@@ -504,31 +562,89 @@ int main(int argc, char* argv[])
 	// Note if you keep your code segment under 16k, then all the runtime
 	// will always be available to all banks.
 
-	// print report header
-	printf("\n#  SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
-	printf("=  ======  =======  ======  =====  ===============\n");
-
 	int cnt=0;
-	for (int i=nNumBanks; i>=0; i--) {
-		fwrite(buf[i], 1, 16384, fp);
+	if (!isSMS) {
+		// print report header
+		printf("\n#  SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
+		printf("=  ======  =======  ======  =====  ===============\n");
 
-		int fre;
-		if (i == 0) {
-			fre=0xbfff-nHighestUsed[0];
-		} else {
-			// ffbf because ffc0 and up are reserved for the bank switch logic
-			fre=0xffbf-nHighestUsed[i];
-		}
+		// reverse order for megacart
+		for (int i=nNumBanks; i>=0; i--) {
+			fwrite(buf[i], 1, 16384, fp);
 
-		for (int k=16383-fre; k>=0; k--) {
-			if (k>16383-9) continue;
-			if (0 == memcmp(&buf[i][k], "LinkTag:",8)) {
-				strcpy(szName[i], (const char*)(&buf[i][k])+8);
+			int fre;
+			if (i == 0) {
+				fre=0xbfff-nHighestUsed[0];
+			} else {
+				// ffbf because ffc0 and up are reserved for the bank switch logic
+				fre=0xffbf-nHighestUsed[i];
 			}
+
+			for (int k=16383-fre; k>=0; k--) {
+				if (k>16383-9) continue;
+				if (0 == memcmp(&buf[i][k], "LinkTag:",8)) {
+					strcpy(szName[i], (const char*)(&buf[i][k])+8);
+				}
+			}
+	//		printf("Bank 0x%X (0xFFF%X) (%s) mapped to %04X has %d bytes free\n", i, 0xf-i, szName[i], cnt*16384, fre);
+			printf("%X  0xFFF%X  0x%05X  %s  %5d  %s\n", i, 0xf-i, cnt*16384, i==0?"0x8000":"0xC000", fre, szName[i]);
+			cnt++;
 		}
-//		printf("Bank 0x%X (0xFFF%X) (%s) mapped to %04X has %d bytes free\n", i, 0xf-i, szName[i], cnt*16384, fre);
-		printf("%X  0xFFF%X  0x%05X  %s  %5d  %s\n", i, 0xf-i, cnt*16384, i==0?"0x8000":"0xC000", fre, szName[i]);
-		cnt++;
+	} else {
+		// print report header
+		printf("\n#  SWITCH  ROM_AD   SMS_AD  FREE   NAME\n");
+		printf("=  ======  =======  ======  =====  ===============\n");
+
+		// forward order for SMS
+		for (int i=0; i<=nNumBanks; i++) {
+			int fre=0;
+			if (i == 0) {
+				fre=0x3fff-nHighestUsed[0];
+			} else if ((i == 1)&&(smsBank1Fixed)) {
+				fre=0x7fff-nHighestUsed[i];
+			} else {
+				fre=0xbfff-nHighestUsed[i];
+			}
+
+			if (isSMS) {
+				// add the Sega header to bank 1 so it appears at the right place in the ROM
+				if (i == 1) {
+					fre -= 16;
+					if (fre >= 0) {
+						// tag
+						memcpy(&buf[1][0x3ff0], "TMR SEGA  ", 10);
+						// checksum from 0-0x7fef
+						int chk=0;
+						for (int idx=0; idx<16384; ++idx) {
+							chk+=buf[0][idx];
+							if (idx < 0x3ff0) chk+=buf[1][idx];
+						}
+						buf[1][0x3ffa]=chk&0xff;
+						buf[1][0x3ffb]=(chk>>8)&0xff;
+						// 5 nibbles of product code
+						buf[1][0x3ffc]=0x99;	
+						buf[1][0x3ffd]=0x99;
+						// low nibble, ROM version (0)
+						buf[1][0x3ffe]=0x00;
+						// rom region in high nibble (0x3x = SMS JP, 0x4x = SMS World, 0x5x = GG JP, 0x6x = GG World, 0x7x = GG INT?)
+						// rom size in low nibble (0=256k, 1=512k, C=32k, F=128k) - not sure how important this is
+						buf[1][0x3fff]=0x40;
+					}
+				}
+			}
+
+			fwrite(buf[i], 1, 16384, fp);
+
+			for (int k=16383-fre; k>=0; k--) {
+				if (k>16383-9) continue;
+				if (0 == memcmp(&buf[i][k], "LinkTag:",8)) {
+					strcpy(szName[i], (const char*)(&buf[i][k])+8);
+				}
+			}
+			// Technically bank 1 also appears fixed at 0x4000, but I'm disregarding that in my design
+			printf("%X  0x000%X  0x%05X  %s  %5d  %s\n", i, i, cnt*16384, i==0?"0x0000":(i==1 && smsBank1Fixed)?"0x4000":"0x8000", fre, szName[i]);
+			cnt++;
+		}
 	}
 	fclose(fp);
 
