@@ -565,8 +565,8 @@ int main(int argc, char* argv[])
 	int cnt=0;
 	if (!isSMS) {
 		// print report header
-		printf("\n#  SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
-		printf("=  ======  =======  ======  =====  ===============\n");
+		printf("\n#   SWITCH  ROM_AD   COL_AD  FREE   NAME\n");
+		printf("==  ======  =======  ======  =====  ===============\n");
 
 		// reverse order for megacart
 		for (int i=nNumBanks; i>=0; i--) {
@@ -587,13 +587,13 @@ int main(int argc, char* argv[])
 				}
 			}
 	//		printf("Bank 0x%X (0xFFF%X) (%s) mapped to %04X has %d bytes free\n", i, 0xf-i, szName[i], cnt*16384, fre);
-			printf("%X  0xFFF%X  0x%05X  %s  %5d  %s\n", i, 0xf-i, cnt*16384, i==0?"0x8000":"0xC000", fre, szName[i]);
+			printf("%2X  0xFF%2X  0x%05X  %s  %5d  %s\n", i, 0xFF-i, cnt*16384, i==0?"0x8000":"0xC000", fre, szName[i]);
 			cnt++;
 		}
 	} else {
 		// print report header
-		printf("\n#  SWITCH  ROM_AD   SMS_AD  FREE   NAME\n");
-		printf("=  ======  =======  ======  =====  ===============\n");
+		printf("\n#   SWITCH  ROM_AD   SMS_AD  FREE   NAME\n");
+		printf("==  ======  =======  ======  =====  ===============\n");
 
 		// forward order for SMS
 		for (int i=0; i<=nNumBanks; i++) {
@@ -642,7 +642,7 @@ int main(int argc, char* argv[])
 				}
 			}
 			// Technically bank 1 also appears fixed at 0x4000, but I'm disregarding that in my design
-			printf("%X  0x000%X  0x%05X  %s  %5d  %s\n", i, i, cnt*16384, i==0?"0x0000":(i==1 && smsBank1Fixed)?"0x4000":"0x8000", fre, szName[i]);
+			printf("%2X  0x00%02X  0x%05X  %s  %5d  %s\n", i, i, cnt*16384, i==0?"0x0000":(i==1 && smsBank1Fixed)?"0x4000":"0x8000", fre, szName[i]);
 			cnt++;
 		}
 	}
